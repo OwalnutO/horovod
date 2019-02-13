@@ -100,10 +100,6 @@ struct HorovodGlobalState {
   // Current shared buffer size
   int64_t shared_buffer_size = 0;
 
-  // Will be set to true after initialization when ddl is used
-  bool ddl_initialized = false;
-  int32_t ddl_local_device_id = 0;
-
   ~HorovodGlobalState() {
     // Make sure that the destructor of the background thread is safe to
     // call. If a thread is still joinable (not detached or complete) its

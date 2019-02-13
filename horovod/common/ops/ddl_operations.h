@@ -24,9 +24,16 @@
 namespace horovod {
 namespace common {
 
+struct DDLContext {
+  // Will be set to true after initialization when ddl is used
+  bool ddl_initialized = false;
+  int32_t ddl_local_device_id = 0;
+};
+
 class DDLAllreduce : public CUDACustomAllreduce {
 public:
-  DDLAllreduce(CUDAContext* cuda_context,
+  DDLAllreduce(DDLContext* ddl_context,
+               CUDAContext* cuda_context,
                CommunicationContext* comm_context,
                HorovodGlobalState* global_state);
 
@@ -36,6 +43,8 @@ protected:
                        cudaStream_t& stream, std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
                        const void* fused_input_data, void* buffer_data,
                        int64_t& num_elements, size_t& buffer_len, void* host_buffer) override;
+
+  DDLContext* ddl_context_;
 };
 
 } // namespace common

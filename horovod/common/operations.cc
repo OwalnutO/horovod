@@ -94,6 +94,10 @@ CUDAContext cuda_context;
 NCCLContext nccl_context;
 #endif
 
+#if HAVE_DDL
+DDLContext ddl_context;
+#endif
+
 std::unique_ptr<OperationManager> op_manager;
 
 // For clarify in argument lists.
@@ -136,7 +140,7 @@ OperationManager* CreateOperationManager(CommunicationContext& ctx, HorovodGloba
         new HierarchicalAllreduce(&nccl_context, &cuda_context, &ctx, &state));
 
   #elif HAVE_DDL && HOROVOD_GPU_ALLREDUCE == 'D'
-    allreduce_op.reset(new DDLAllreduce(&cuda_context, &ctx, &state));
+    allreduce_op.reset(new DDLAllreduce(&ddl_context, &cuda_context, &ctx, &state));
   #endif
 
   hierarchical_allgather_op.reset(new HierarchicalAllgather(&ctx, &state));

@@ -156,10 +156,6 @@ Status CUDACustomAllreduce::Execute(std::vector<TensorTableEntry>& entries, cons
 
     buffer_len = (size_t)offset;
 
-    if (timeline.Initialized() || global_state_->ddl_initialized) {
-      cuda_context_->RecordEvent(event_queue, MEMCPY_IN_FUSION_BUFFER, stream);
-    }
-
     // Set the input data to originate from the buffer.
     fused_input_data = buffer_data;
 
@@ -167,21 +163,11 @@ Status CUDACustomAllreduce::Execute(std::vector<TensorTableEntry>& entries, cons
     for (auto& e : entries) {
       num_elements += e.tensor->shape().num_elements();
     }
-
   } else {
     fused_input_data = first_entry.tensor->data();
     buffer_data = (void*)first_entry.output->data();
     num_elements = first_entry.tensor->shape().num_elements();
     buffer_len = (size_t)first_entry.output->size();
-
-    if (global_state_->ddl_initialized) {
-      // Copy input buffer content to output buffer
-      // because DDL only supports in-place allreduce
-      auto cuda_result = cudaMemcpyAsync(buffer_data, fused_input_data, buffer_len,
-                                         cudaMemcpyDeviceToDevice, stream);
-      cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-      cuda_context_->RecordEvent(event_queue, MEMCPY_IN_FUSION_BUFFER, stream);
-    }
   }
 
   void* host_buffer = nullptr;
