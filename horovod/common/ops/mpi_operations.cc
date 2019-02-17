@@ -135,5 +135,44 @@ MPI_Comm MPIContext::GetMPICommunicator(Communicator comm) {
   }
 }
 
+void DoMPIAllreduce(MPIContext* mpi_context,
+                   std::vector<TensorTableEntry>& entries,
+                   void* buffer_data, int64_t& num_elements, size_t& buffer_len) {
+  auto& first_entry = entries[0];
+  const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
+                        ? nullptr : first_entry.tensor->data();
+  mpi_context->Allreduce(buffer_data, num_elements, first_entry, sendbuf, CommunicationContext::Communicator::GLOBAL);
+}
+
+MPIAllreduce::MPIAllreduce(MPIContext* mpi_context,
+                           CommunicationContext* comm_context,
+                           HorovodGlobalState* global_state)
+                           : AllreduceOp(comm_context, global_state), mpi_context_(mpi_context) {}
+
+void MPIAllreduce::DoAllreduce(std::vector<TensorTableEntry>& entries,
+                               const void* fused_input_data, void* buffer_data,
+                               int64_t& num_elements, size_t& buffer_len) {
+  RecordEventStart(mpi_context_->AllreduceActivity(), entries);
+  DoMPIAllreduce(mpi_context_, entries, buffer_data, num_elements, buffer_len);
+  RecordEventEnd(mpi_context_->AllreduceActivity(), entries);
+}
+
+#if HAVE_CUDA
+MPI_CUDAAllreduce::MPI_CUDAAllreduce(MPIContext* mpi_context,
+                                     CUDAContext* cuda_context,
+                                     CommunicationContext* comm_context,
+                                     HorovodGlobalState* global_state)
+                                     : CUDAAllreduce(cuda_context, comm_context, global_state),
+                                       mpi_context_(mpi_context) {}
+
+void MPI_CUDAAllreduce::DoAllreduce(std::vector<TensorTableEntry>& entries,
+                                    const void* fused_input_data, void* buffer_data,
+                                    int64_t& num_elements, size_t& buffer_len) {
+  RecordEventStart(mpi_context_->AllreduceActivity(), entries);
+  DoMPIAllreduce(mpi_context_, entries, buffer_data, num_elements, buffer_len);
+  RecordEventEnd(mpi_context_->AllreduceActivity(), entries);
+}
+#endif
+
 } // namespace common
 } // namespace horovod

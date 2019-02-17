@@ -122,7 +122,7 @@ const Status DUPLICATE_NAME_ERROR = Status::InvalidArgument(
     "to request another tensor, use a different tensor name.");
 
 OperationManager* CreateOperationManager(CommunicationContext& ctx, HorovodGlobalState& state) {
-  std::shared_ptr<AllreduceOp> allreduce_op(new AllreduceOp(&ctx, &state));
+  std::shared_ptr<AllreduceOp> allreduce_op(new MPIAllreduce(&mpi_context, &ctx, &state));
   std::shared_ptr<AllgatherOp> allgather_op(new AllgatherOp(&ctx, &state));
   std::shared_ptr<BroadcastOp> broadcast_op(new BroadcastOp(&ctx, &state));
   std::shared_ptr<ErrorOp> error_op(new ErrorOp(&ctx, &state));
@@ -131,7 +131,7 @@ OperationManager* CreateOperationManager(CommunicationContext& ctx, HorovodGloba
 
 #if HAVE_CUDA
 #if HOROVOD_GPU_ALLREDUCE == 'M'
-  allreduce_op.reset(new CUDAAllreduce(&cuda_context, &ctx, &state));
+  allreduce_op.reset(new MPI_CUDAAllreduce(&cuda_context, &ctx, &state));
 
 #else
   #if HAVE_NCCL && HOROVOD_GPU_ALLREDUCE == 'N'

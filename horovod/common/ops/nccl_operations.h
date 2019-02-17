@@ -26,28 +26,27 @@ namespace common {
 
 struct NCCLContext {
   std::unordered_map<std::vector<int32_t>, ncclComm_t> nccl_comms;
-  ncclComm_t* nccl_comm;
 
   void ErrorCheck(std::string op_name, ncclResult_t nccl_result);
 };
 
-class NCCLAllreduce : public CUDACustomAllreduce {
+class NCCLAllreduce : public CUDAAllreduceAsync {
 public:
   NCCLAllreduce(NCCLContext* nccl_context, CUDAContext* cuda_context,
                 CommunicationContext* comm_context, HorovodGlobalState* global_state);
 
 protected:
   void InitComm(std::vector<TensorTableEntry>& entries, const std::vector<int32_t>& devices) override;
-  void CustomAllreduce(std::vector<TensorTableEntry>& entries,
-                       cudaStream_t& stream, std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
-                       const void* fused_input_data, void* buffer_data,
-                       int64_t& num_elements, size_t& buffer_len, void* host_buffer) override;
+  void DoAllreduce(std::vector<TensorTableEntry>& entries,
+                   const void* fused_input_data, void* buffer_data,
+                   int64_t& num_elements, size_t& buffer_len) override;
 
   virtual const std::vector<int32_t> GetDeviceMap(const std::vector<int32_t>& devices);
   virtual void SetCommStrategy(int& nccl_rank, int& nccl_size,
                                CommunicationContext::Communicator& nccl_id_bcast_comm);
 
   NCCLContext* nccl_context_;
+  ncclComm_t* nccl_comm_;
 };
 
 class HierarchicalAllreduce : public NCCLAllreduce {
@@ -56,10 +55,9 @@ public:
                         CommunicationContext* comm_context, HorovodGlobalState* global_state);
 
 protected:
-  void CustomAllreduce(std::vector<TensorTableEntry>& entries,
-                       cudaStream_t& stream, std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
-                       const void* fused_input_data, void* buffer_data,
-                       int64_t& num_elements, size_t& buffer_len, void* host_buffer) override;
+  void DoAllreduce(std::vector<TensorTableEntry>& entries,
+                   const void* fused_input_data, void* buffer_data,
+                   int64_t& num_elements, size_t& buffer_len) override;
 
 private:
   const std::vector<int32_t> GetDeviceMap(const std::vector<int32_t>& devices) override;

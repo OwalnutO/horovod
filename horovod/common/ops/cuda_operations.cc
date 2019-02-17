@@ -68,7 +68,7 @@ void CUDAContext::ErrorCheck(std::string op_name, cudaError_t cuda_result) {
 }
 
 void CUDAContext::RecordEvent(std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
-                              std::string name, cudaStream_t stream) {
+                              std::string name, cudaStream_t& stream) {
   cudaEvent_t event;
   ErrorCheck("GetCudaEvent", GetCudaEvent(&event));
   ErrorCheck("cudaEventRecord", cudaEventRecord(event, stream));
@@ -98,109 +98,46 @@ CUDAAllreduce::CUDAAllreduce(CUDAContext* context,
                              HorovodGlobalState* global_state)
                              : AllreduceOp(comm_context, global_state), cuda_context_(context) {}
 
-Status CUDAAllreduce::Execute(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) {
-  if (OnGPU(entries)) {
-    InitCUDA(entries);
-  }
-  return AllreduceOp::Execute(entries, response);
+void CUDAAllreduce::Initialize(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) {
+  InitCUDA(entries);
+  InitComm(entries, response.devices());
 }
 
-CUDACustomAllreduce::CUDACustomAllreduce(CUDAContext* context,
-                                         CommunicationContext* comm_context,
-                                         HorovodGlobalState* global_state)
-: CUDAAllreduce(context, comm_context, global_state) {}
+CUDAAllreduceAsync::CUDAAllreduceAsync(CUDAContext* context,
+                                       CommunicationContext* comm_context,
+                                       HorovodGlobalState* global_state)
+                                       : CUDAAllreduce(context, comm_context, global_state) {}
 
-Status CUDACustomAllreduce::Execute(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) {
-  if (!OnGPU(entries)) {
-    return AllreduceOp::Execute(entries, response);
+void CUDAAllreduceAsync::Initialize(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) {
+  CUDAAllreduce::Initialize(entries, response);
+
+  event_queue_ = std::queue<std::pair<std::string, cudaEvent_t>>();
+  stream_ = &cuda_context_->streams[first_entry.device];
+  host_buffer_ = nullptr;
+
+  if (global_state_->timeline.Initialized()) {
+    cuda_context_->RecordEvent(event_queue_, QUEUE, *stream_);
   }
+}
 
-  InitCUDA(entries);
-
-  auto& first_entry = entries[0];
-  auto stream = cuda_context_->streams[first_entry.device];
-  auto event_queue = std::queue<std::pair<std::string, cudaEvent_t>>();
-
-  InitComm(entries, response.devices());
-
-  auto& timeline = global_state_->timeline;
-  if (timeline.Initialized()) {
-    cuda_context_->RecordEvent(event_queue, QUEUE, stream);
-  }
-
-  // If entries.size() > 1, we copy tensors into fusion buffer before
-  // allreduce, and distribute results of allreduce back into target
-  // tensors after allreduce.
-
-  const void* fused_input_data;
-  void* buffer_data;
-  int64_t num_elements = 0;
-  size_t buffer_len;
-  if (entries.size() > 1) {
-    // Access the fusion buffer.
-    auto& buffer = global_state_->fusion_buffer.GetBuffer(
-        first_entry.device, first_entry.context->framework());
-    buffer_data =
-        const_cast<void*>(buffer->AccessData(first_entry.context));
-
-    // Copy memory into the fusion buffer.
-    int64_t offset = 0;
-    for (auto& e : entries) {
-      void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
-      auto cuda_result = cudaMemcpyAsync(buffer_data_at_offset, e.tensor->data(),
-                                         (size_t)e.tensor->size(),
-                                         cudaMemcpyDeviceToDevice, stream);
-      cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-      offset += e.tensor->size();
-    }
-
-    buffer_len = (size_t)offset;
-
-    // Set the input data to originate from the buffer.
-    fused_input_data = buffer_data;
-
-    // Perform the reduction on the fusion buffer.
-    for (auto& e : entries) {
-      num_elements += e.tensor->shape().num_elements();
-    }
-  } else {
-    fused_input_data = first_entry.tensor->data();
-    buffer_data = (void*)first_entry.output->data();
-    num_elements = first_entry.tensor->shape().num_elements();
-    buffer_len = (size_t)first_entry.output->size();
-  }
-
-  void* host_buffer = nullptr;
-  CustomAllreduce(entries, stream, event_queue, fused_input_data, buffer_data, num_elements, buffer_len, host_buffer);
-
-  if (entries.size() > 1) {
-    // Copy memory out of the fusion buffer.
-    int64_t offset = 0;
-    for (auto& e : entries) {
-      void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
-      auto cuda_result = cudaMemcpyAsync((void*)e.output->data(),
-                                         buffer_data_at_offset,
-                                         (size_t)e.tensor->size(),
-                                         cudaMemcpyDeviceToDevice, stream);
-      cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-      offset += e.tensor->size();
-    }
-    if (timeline.Initialized()) {
-      cuda_context_->RecordEvent(event_queue, MEMCPY_OUT_FUSION_BUFFER, stream);
-    }
-  }
-
+Status CUDAAllreduceAsync::Finalize(std::vector<TensorTableEntry>& entries) {
   // Use completion marker via event because it's faster than
   // blocking cudaStreamSynchronize() in this thread.
-  cuda_context_->RecordEvent(event_queue, "", stream);
+  cuda_context_->RecordEvent(event_queue_, "", *stream_);
+
+  auto& first_entry = entries[0];
+  void* host_buffer = host_buffer_;
+  auto& event_queue = event_queue_;
+  auto& timeline = global_state_->timeline;
+  auto& cuda_context = cuda_context_;
 
   // TODO: use thread pool or single thread for callbacks
   std::thread finalizer_thread([entries, first_entry, host_buffer,
-                                event_queue, &timeline, this]() mutable {
+                                event_queue, &timeline, &cuda_context]() mutable {
     auto cuda_result = cudaSetDevice(first_entry.device);
-    cuda_context_->ErrorCheck("cudaSetDevice", cuda_result);
+    cuda_context->ErrorCheck("cudaSetDevice", cuda_result);
 
-    cuda_context_->WaitForEvents(event_queue, entries, timeline);
+    cuda_context->WaitForEvents(event_queue_, entries, timeline);
     if (host_buffer != nullptr) {
       free(host_buffer);
     }
@@ -214,6 +151,18 @@ Status CUDACustomAllreduce::Execute(std::vector<TensorTableEntry>& entries, cons
   finalizer_thread.detach();
 
   return Status::Finalizing();
+}
+
+void CUDAAllreduceAsync::StreamSynchronize(std::vector<TensorTableEntry>& entries) {
+}
+
+void CUDAAllreduceAsync::RecordEventStart(std::string event_name, std::vector<TensorTableEntry>& entries) {
+}
+
+void CUDAAllreduceAsync::RecordEventEnd(std::string event_name, std::vector<TensorTableEntry>& entries) {
+  if (global_state_->timeline.Initialized()) {
+    cuda_context_->RecordEvent(event_queue_, event_name, stream);
+  }
 }
 
 bool CUDAAllreduce::OnGPU(std::vector<TensorTableEntry>& entries) {
@@ -238,36 +187,26 @@ void CUDAAllreduce::InitCUDA(std::vector<TensorTableEntry>& entries) {
 
 void CUDAAllreduce::MemcpyInFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
                                          std::vector<TensorTableEntry>& entries) {
-  if (OnGPU(entries)) {
-    auto& first_entry = entries[0];
-    auto cuda_result = cudaMemcpyAsync(buffer_data_at_offset, e.tensor->data(),
-                                       (size_t)e.tensor->size(), cudaMemcpyDeviceToDevice,
-                                       cuda_context_->streams[first_entry.device]);
-    cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-  } else {
-    AllreduceOp::MemcpyInFusionBuffer(buffer_data_at_offset, e, entries);
-  }
+  auto& first_entry = entries[0];
+  auto cuda_result = cudaMemcpyAsync(buffer_data_at_offset, e.tensor->data(),
+                                     (size_t)e.tensor->size(), cudaMemcpyDeviceToDevice,
+                                     cuda_context_->streams[first_entry.device]);
+  cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
 }
 
 void CUDAAllreduce::MemcpyOutFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
                                           std::vector<TensorTableEntry>& entries) {
-  if (OnGPU(entries)) {
-    auto& first_entry = entries[0];
-    auto cuda_result = cudaMemcpyAsync((void*)e.output->data(), buffer_data_at_offset,
-                                       (size_t)e.tensor->size(), cudaMemcpyDeviceToDevice,
-                                       cuda_context_->streams[first_entry.device]);
-    cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-  } else {
-    AllreduceOp::MemcpyOutFusionBuffer(buffer_data_at_offset, e, entries);
-  }
+  auto& first_entry = entries[0];
+  auto cuda_result = cudaMemcpyAsync((void*)e.output->data(), buffer_data_at_offset,
+                                     (size_t)e.tensor->size(), cudaMemcpyDeviceToDevice,
+                                     cuda_context_->streams[first_entry.device]);
+  cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
 }
 
 void CUDAAllreduce::StreamSynchronize(std::vector<TensorTableEntry>& entries) {
-  if (OnGPU(entries)) {
-    auto& first_entry = entries[0];
-    auto cuda_result = cudaStreamSynchronize(cuda_context_->streams[first_entry.device]);
-    cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_result);
-  }
+  auto& first_entry = entries[0];
+  auto cuda_result = cudaStreamSynchronize(cuda_context_->streams[first_entry.device]);
+  cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_result);
 }
 
 } // namespace common

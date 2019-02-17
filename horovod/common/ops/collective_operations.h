@@ -44,11 +44,25 @@ public:
   virtual Status Execute(std::vector<TensorTableEntry>& entries, const HorovodResponse& response);
 
 protected:
+  virtual void DoAllreduce(std::vector<TensorTableEntry>& entries,
+                           const void* fused_input_data, void* buffer_data,
+                           int64_t& num_elements, size_t& buffer_len) = 0;
+
+  virtual void Initialize(std::vector<TensorTableEntry>& entries, const HorovodResponse& response);
+
+  virtual Status Finalize(std::vector<TensorTableEntry>& entries);
+
   virtual void MemcpyInFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
                                     std::vector<TensorTableEntry>& entries);
+
   virtual void MemcpyOutFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
                                      std::vector<TensorTableEntry>& entries);
+
   virtual void StreamSynchronize(std::vector<TensorTableEntry>& entries);
+
+  virtual void RecordEventStart(std::string event_name, std::vector<TensorTableEntry>& entries);
+
+  virtual void RecordEventEnd(std::string event_name, std::vector<TensorTableEntry>& entries);
 };
 
 class AllgatherOp : public HorovodOp {

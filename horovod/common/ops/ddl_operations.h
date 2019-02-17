@@ -30,7 +30,7 @@ struct DDLContext {
   int32_t ddl_local_device_id = 0;
 };
 
-class DDLAllreduce : public CUDACustomAllreduce {
+class DDLAllreduce : public CUDAAllreduceAsync {
 public:
   DDLAllreduce(DDLContext* ddl_context,
                CUDAContext* cuda_context,
@@ -39,10 +39,9 @@ public:
 
 protected:
   void InitComm(std::vector<TensorTableEntry>& entries, const std::vector<int32_t>& devices) override;
-  void CustomAllreduce(std::vector<TensorTableEntry>& entries,
-                       cudaStream_t& stream, std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
-                       const void* fused_input_data, void* buffer_data,
-                       int64_t& num_elements, size_t& buffer_len, void* host_buffer) override;
+  void Dollreduce(std::vector<TensorTableEntry>& entries,
+                  const void* fused_input_data, void* buffer_data,
+                  int64_t& num_elements, size_t& buffer_len) override;
 
   DDLContext* ddl_context_;
 };

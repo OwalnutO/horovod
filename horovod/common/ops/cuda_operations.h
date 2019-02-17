@@ -65,9 +65,9 @@ public:
   CUDAAllreduce(CUDAContext* context,
                 CommunicationContext* comm_context,
                 HorovodGlobalState* global_state);
-  Status Execute(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) override;
 
 protected:
+  void Initialize(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) override;
   void MemcpyInFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
                             std::vector<TensorTableEntry>& entries) override;
   void MemcpyOutFusionBuffer(void* buffer_data_at_offset, TensorTableEntry& e,
@@ -75,24 +75,30 @@ protected:
   void StreamSynchronize(std::vector<TensorTableEntry>& entries) override;
 
   void InitCUDA(std::vector<TensorTableEntry>& entries);
-  bool OnGPU(std::vector<TensorTableEntry>& entries);
+  virtual void InitComm(std::vector<TensorTableEntry>& entries, const std::vector<int32_t>& devices) = 0;
 
   struct CUDAContext* cuda_context_;
 };
 
-class CUDACustomAllreduce : public CUDAAllreduce {
+// Implementation of the Allreduce operation that does not block using StreamSynchronize after each step
+// (memcpy into fusion buffer, allreduce, memcpy out of fusion buffer), and instead relies in a separate
+// finalize thread to handle synchronization at the end of the operation.
+class CUDAAllreduceAsync : public CUDAAllreduce {
 public:
-  CUDACustomAllreduce(CUDAContext* context,
-                      CommunicationContext* comm_context,
-                      HorovodGlobalState* global_state);
-  Status Execute(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) override;
+  CUDAAllreduceAsync(CUDAContext* context,
+                     CommunicationContext* comm_context,
+                     HorovodGlobalState* global_state);
 
 protected:
-  virtual void InitComm(std::vector<TensorTableEntry>& entries, const std::vector<int32_t>& devices) = 0;
-  virtual void CustomAllreduce(std::vector<TensorTableEntry>& entries,
-                               cudaStream_t& stream, std::queue<std::pair<std::string, cudaEvent_t>>& event_queue,
-                               const void* fused_input_data, void* buffer_data,
-                               int64_t& num_elements, size_t& buffer_len, void* host_buffer) = 0;
+  void Initialize(std::vector<TensorTableEntry>& entries, const HorovodResponse& response) override;
+  Status Finalize(std::vector<TensorTableEntry>& entries) override;
+  void StreamSynchronize(std::vector<TensorTableEntry>& entries) override;
+  void RecordEventStart(std::string event_name, std::vector<TensorTableEntry>& entries) override;
+  void RecordEventEnd(std::string event_name, std::vector<TensorTableEntry>& entries) override;
+
+  std::queue<std::pair<std::string, cudaEvent_t>> event_queue_;
+  cudaStream_t* stream_;
+  void* host_buffer_;
 };
 
 } // namespace common

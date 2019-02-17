@@ -25,6 +25,11 @@
 #include "../common.h"
 #include "../global_state.h"
 #include "communication_context.h"
+#include "collective_operations.h"
+
+#if HAVE_CUDA
+#include "cuda_operations.h"
+#endif
 
 namespace horovod {
 namespace common {
@@ -98,6 +103,35 @@ public:
   // name) and time point when tensor started allreduce op.
   std::unique_ptr<MessageTable> message_table;
 };
+
+class MPIAllreduce : public AllreduceOp {
+public:
+  MPIAllreduce(MPIContext* mpi_context, CommunicationContext* comm_context, HorovodGlobalState* global_state);
+  virtual ~MPIAllreduce()=default;
+
+protected:
+  void DoAllreduce(std::vector<TensorTableEntry>& entries,
+                   const void* fused_input_data, void* buffer_data,
+                   int64_t& num_elements, size_t& buffer_len) override;
+
+  MPIContext* mpi_context_;
+};
+
+#if HAVE_CUDA
+class MPI_CUDAAllreduce : public CUDAAlrreduce {
+public:
+  MPI_CUDAAllreduce(MPIContext* mpi_context, CUDAContext* cuda_context,
+                    CommunicationContext* comm_context, HorovodGlobalState* global_state);
+  virtual ~MPI_CUDAAllreduce()=default;
+
+protected:
+  void DoAllreduce(std::vector<TensorTableEntry>& entries,
+                   const void* fused_input_data, void* buffer_data,
+                   int64_t& num_elements, size_t& buffer_len) override;
+
+  MPIContext* mpi_context_;
+};
+#endif
 
 } // namespace common
 } // namespace horovod
